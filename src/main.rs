@@ -2,6 +2,7 @@ mod errors;
 mod files;
 
 use files::*;
+use files::flags::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -26,6 +27,18 @@ fn xor_file_test(){
     content.clear();
     file.read_to_string(&mut content).unwrap();
     println!("'{}'", content);
+}
+
+fn file_flags_test(){
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open("test.txt")
+        .unwrap();
+    let mut flags=file.get_unix_flags().unwrap();
+    println!("inital flags: {}",flags);
+    flags |=0x10;
 }
 
 fn lock_file_test(){
