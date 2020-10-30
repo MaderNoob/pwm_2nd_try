@@ -4,4 +4,8 @@ pub enum Error{
     ReadFile,
     SeekFile,
     WriteFile,
+    FileGetMetadata,
+    FileSetPermissions,
+    FileGetFlags,
+    FileSetFlags,
 }

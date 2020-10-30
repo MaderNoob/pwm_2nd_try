@@ -23,7 +23,6 @@ impl OpenPasswordsFile for fs::OpenOptions {
 pub trait XorPasswordsFile {
     fn xor_passwords_file<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), errors::Error>;
 }
-
 impl XorPasswordsFile for fs::File {
     fn xor_passwords_file<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), errors::Error> {
         let key_bytes = key.as_ref();
@@ -52,5 +51,65 @@ impl XorPasswordsFile for fs::File {
                 Err(_) => return Err(errors::Error::ReadFile),
             }
         }
+    }
+}
+
+pub trait FileGetFlags {
+    fn get_unix_flags(&self) -> Result<i32, errors::Error>;
+}
+#[cfg(target_family = "unix")]
+impl FileGetFlags for fs::File {
+    fn get_unix_flags(&self) -> Result<i32, errors::Error> {
+        let mut flags = 0;
+        let flags_ptr = &mut flags as *mut i32;
+        unsafe {
+            use std::os::unix::io::AsRawFd;
+            if libc::ioctl(self.as_raw_fd(), 2148034049, flags_ptr) < 0 {
+                Err(errors::Error::FileGetFlags)
+            } else {
+                Ok(flags)
+            }
+        }
+    }
+}
+
+pub trait FileSetFlags {
+    fn set_unix_flags(&self, new_flags: i32) -> Result<i32, errors::Error>;
+}
+#[cfg(target_family = "unix")]
+impl FileSetFlags for fs::File {
+    fn set_unix_flags(&self, new_flags: i32) -> Result<(), errors::Error> {
+        let flags_ptr = &mut new_flags as *mut i32;
+        unsafe {
+            use std::os::unix::io::AsRawFd;
+            if libc::ioctl(self.as_raw_fd(), 1074292226, flags_ptr)<0{
+                Err(errors::Error::FileSetFlags)
+            }else{
+                Ok(())
+            }
+        }
+    }
+}
+
+pub trait LockPasswordsFile {
+    fn lock_passwords_file(&mut self) -> Result<(), errors::Error>;
+}
+impl LockPasswordsFile for fs::File {
+    fn lock_passwords_file(&mut self) -> Result<(), errors::Error> {
+        let metadata = match self.metadata() {
+            Ok(m) => m,
+            Err(_) => return Err(errors::Error::FileGetMetadata),
+        };
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(true);
+        if cfg!(unix) {
+            use std::os::unix::fs::PermissionsExt;
+            // set all access modifiers to read only read only
+            permissions.set_mode(0o1444);
+            if self.set_permissions(permissions).is_err() {
+                return Err(errors::Error::FileSetPermissions);
+            }
+        }
+        Ok(())
     }
 }
