@@ -120,7 +120,6 @@ impl EncryptPasswordsFile for fs::File {
         let mut chacha = ChaCha20Rng::from_seed(seed);
         let mut xor_key_buffer = [0u8; 1024];
         let mut file_buffer = [0u8; 1024];
-        let mut file_cursor_position = 0;
         loop {
             let amount = file_read(self, &mut file_buffer)?;
             if amount == 0 {
@@ -131,9 +130,8 @@ impl EncryptPasswordsFile for fs::File {
             for i in 0..amount {
                 file_buffer[i] ^= xor_key_buffer[i];
             }
-            file_seek(self, SeekFrom::Start(file_cursor_position))?;
+            file_seek(self, SeekFrom::Current(-(amount as i64)))?;
             file_write_all(self, &mut file_buffer[..amount])?;
-            file_cursor_position += amount as u64;
         }
     }
 }
