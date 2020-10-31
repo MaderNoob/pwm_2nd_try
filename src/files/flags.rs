@@ -1,6 +1,10 @@
 use std::fs;
 use crate::errors;
 
+pub enum UnixFileFlags{
+    Immutable=0x10,
+}
+
 pub trait FileGetFlags {
     fn get_unix_flags(&self) -> Result<i32, errors::Error>;
 }

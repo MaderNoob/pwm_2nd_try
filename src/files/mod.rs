@@ -3,6 +3,7 @@ pub mod flags;
 use crate::errors;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
+use flags::*;
 
 pub trait OpenPasswordsFile {
     fn open_passwords_file<P: AsRef<std::path::Path>>(
@@ -56,25 +57,38 @@ impl XorPasswordsFile for fs::File {
     }
 }
 
+pub struct FileLockState{
+    is_readonly:bool,
+    flags:i32,
+    mode:u32,
+}
+pub struct LockPasswordsFileResult{
+    before_lock:FileLockState,
+    after_lock:FileLockState,
+}
 pub trait LockPasswordsFile {
     fn lock_passwords_file(&mut self) -> Result<(), errors::Error>;
 }
+#[cfg(target_family = "unix")]
 impl LockPasswordsFile for fs::File {
     fn lock_passwords_file(&mut self) -> Result<(), errors::Error> {
-        let metadata = match self.metadata() {
-            Ok(m) => m,
-            Err(_) => return Err(errors::Error::FileGetMetadata),
-        };
-        let mut permissions = metadata.permissions();
-        permissions.set_readonly(true);
-        if cfg!(unix) {
-            use std::os::unix::fs::PermissionsExt;
-            // set all access modifiers to read only read only
-            permissions.set_mode(0o1444);
-            if self.set_permissions(permissions).is_err() {
-                return Err(errors::Error::FileSetPermissions);
-            }
-        }
+        let flags=self.get_unix_flags()?;
+        self.set_unix_flags(flags|(UnixFileFlags::Immutable as i32))?;
+        // let metadata = match self.metadata() {
+        //     Ok(m) => m,
+        //     Err(_) => return Err(errors::Error::FileGetMetadata),
+        // };
+        // let mut permissions = metadata.permissions();
+        // let before_lock_state=FileLockState{
+        //     is_readonly:permissions.readonly(),
+
+        // };
+        // permissions.set_readonly(true);
+        // // set all access modifiers to read only read only
+        // permissions.set_mode(0o1444);
+        // if self.set_permissions(permissions).is_err() {
+        //     return Err(errors::Error::FileSetPermissions);
+        // }
         Ok(())
     }
 }

@@ -1,12 +1,12 @@
 mod errors;
 mod files;
 
-use files::*;
 use files::flags::*;
+use files::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
-fn xor_file_test(){
+fn xor_file_test() {
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -29,46 +29,29 @@ fn xor_file_test(){
     println!("'{}'", content);
 }
 
-fn file_flags_test(){
+fn file_flags_test() {
     let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
         .read(true)
         .open("test.txt")
         .unwrap();
-    let mut flags=file.get_unix_flags().unwrap();
-    println!("inital flags: {}",flags);
-    flags |=0x10;
+    let mut file_flags = file.get_unix_flags().unwrap();
+    println!("inital flags: {}", file_flags);
+    file_flags |= 0x10;
+    println!("desired flags: {}", file_flags);
+    file.set_unix_flags(file_flags).unwrap();
+    file_flags = file.get_unix_flags().unwrap();
+    println!("new flags: {}", file_flags);
 }
 
-fn lock_file_test(){
+fn lock_file_test() {
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
-        .read(true)
         .open("test.txt")
         .unwrap();
-    //file.lock_passwords_file().unwrap();
-    use std::os::unix::io::AsRawFd;
-    let mut x=0;
-    unsafe {
-        let addr= &mut x as *mut i32;
-        let get_result=libc::ioctl(file.as_raw_fd(), 2148034049,addr);
-        if get_result<0{
-            panic!("failed to get flags");
-        }
-        println!("flags: {}",*addr);
-        *addr|=0x10;
-        let result=libc::ioctl(file.as_raw_fd(), 1074292226,addr);
-        if result<0{
-            panic!("failed to set flags");
-        }else{
-            println!("success");
-        }
-    }
+    file.lock_passwords_file().unwrap();
 }
-
 
 fn main() {
-    lock_file_test();
+    lock_file_test()
 }
