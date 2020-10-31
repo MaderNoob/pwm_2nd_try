@@ -33,14 +33,14 @@ fn file_seek(file: &mut fs::File, pos: SeekFrom) -> Result<u64, errors::Error> {
 fn file_write_all(file: &mut fs::File, buf: &mut [u8]) -> Result<(), errors::Error> {
     match file.write_all(buf) {
         Ok(()) => Ok(()),
-        Err(_) => Err(errors::Error::WriteFile),
+        Err(e) => Err(errors::Error::WriteFile),
     }
 }
 
 fn file_read(file: &mut fs::File, buf: &mut [u8]) -> Result<usize, errors::Error> {
     match file.read(buf) {
         Ok(result) => Ok(result),
-        Err(_) => Err(errors::Error::ReadFile),
+        Err(e) => Err(errors::Error::ReadFile),
     }
 }
 
@@ -126,7 +126,7 @@ impl EncryptPasswordsFile for fs::File {
             if amount == 0 {
                 break Ok(());
             }
-            // generate key 
+            // generate key
             chacha.fill_bytes(&mut xor_key_buffer[..amount]);
             for i in 0..amount {
                 file_buffer[i] ^= xor_key_buffer[i];
