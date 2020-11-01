@@ -7,13 +7,13 @@ use sha2::Sha512;
 use std::fs;
 
 pub trait LockFile {
-    fn lock<F:FnOnce()->bool>(
+    fn lock<F: FnOnce() -> bool>(
         &mut self,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-        backup_failed_continue_anyway:F,
+        backup_failed_continue_anyway: F,
     ) -> Result<(), errors::Error>;
 }
 
@@ -25,10 +25,11 @@ fn lock_file(
     hash_salt_buffer: &[u8],
     salted_key_hash_buffer: &[u8],
     hmac_buffer: &mut [u8],
-    mut hmac_hasher: Sha512,
     flags: i32,
-    headers_size:usize,
+    headers_size: usize,
 ) -> Result<(), errors::Error> {
+    let mut hmac_hasher = Sha512::new();
+
     // leave the headers empty for now,
     // as some of the values like the hmac havn't been calculated yet
     file_seek(file, SeekFrom::Start(headers_size as u64))?;
@@ -62,27 +63,28 @@ fn lock_file(
 
     file_write_all(file, &salted_key_hash_buffer)?;
     file_write_all(file, &hmac_buffer)?;
-    file_write_all(file, &flags.to_ne_bytes())?;
+    file_write_all(file, &salt_length.to_ne_bytes())?;
     file_write_all(file, &hash_salt_buffer)?;
     file_write_all(file, &encryption_salt_buffer)?;
+    file_write_all(file, &flags.to_ne_bytes())?;
     file.set_unix_flags(flags | (flags::UnixFileFlags::Immutable as i32))
 }
 
 #[cfg(target_family = "unix")]
 impl LockFile for fs::File {
-    fn lock<F:FnOnce()->bool>(
+    fn lock<F: FnOnce() -> bool>(
         &mut self,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-        backup_failed_continue_anyway:F,
+        backup_failed_continue_anyway: F,
     ) -> Result<(), errors::Error> {
-        let mut hash_salt_buffer = vec![0u8; salt_length + 1];
-        thread_random.fill_bytes(&mut hash_salt_buffer[..salt_length]);
+        let mut hash_salt_buffer = vec![0u8; salt_length];
+        thread_random.fill_bytes(&mut hash_salt_buffer);
 
-        let mut encryption_salt_buffer = vec![0u8; salt_length + 1];
-        thread_random.fill_bytes(&mut encryption_salt_buffer[..salt_length]);
+        let mut encryption_salt_buffer = vec![0u8; salt_length];
+        thread_random.fill_bytes(&mut encryption_salt_buffer);
 
         // generate salted key hash
         let mut salted_key_hash_buffer = [0u8; 65];
@@ -90,7 +92,6 @@ impl LockFile for fs::File {
         // 64 bytes for the hmac itself
         // and one more byte for the null byte at the end
         let mut hmac_buffer = [0u8; 65];
-        let mut hmac_hasher = Sha512::new();
 
         // get file flags before locking
         let flags = self.get_unix_flags()?;
@@ -98,17 +99,18 @@ impl LockFile for fs::File {
         // calculate headers size
         let headers_size = salted_key_hash_buffer.len()
             + hmac_buffer.len()
-            + std::mem::size_of::<i32>()
+            + std::mem::size_of::<usize>()
             + hash_salt_buffer.len()
-            + encryption_salt_buffer.len();
+            + encryption_salt_buffer.len()
+            + std::mem::size_of::<i32>();
 
-        let backup_file = match self.backup(backup_file_name){
-            Ok(file)=>Some(file),
-            Err(e)=>{
-                if backup_failed_continue_anyway(){
+        let backup_file = match self.backup(backup_file_name) {
+            Ok(file) => Some(file),
+            Err(e) => {
+                if backup_failed_continue_anyway() {
                     None
-                }else{
-                    return Err(e)
+                } else {
+                    return Err(e);
                 }
             }
         };
@@ -117,17 +119,16 @@ impl LockFile for fs::File {
             self,
             key,
             salt_length,
-            &encryption_salt_buffer[..],
-            &hash_salt_buffer[..],
+            &encryption_salt_buffer,
+            &hash_salt_buffer,
             &salted_key_hash_buffer,
             &mut hmac_buffer,
-            hmac_hasher,
             flags,
-            headers_size
+            headers_size,
         ) {
             Ok(()) => Ok(()),
             Err(e) => {
-                if let Some(mut backup)=backup_file{
+                if let Some(mut backup) = backup_file {
                     self.revert_to_backup(&mut backup)?;
                 }
                 Err(e)
