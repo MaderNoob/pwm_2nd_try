@@ -11,19 +11,19 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const READ_BUFFER_SIZE: usize = 1024;
 
-fn get_file_metadata(file: &fs::File) -> Result<fs::Metadata, errors::Error> {
-    match file.metadata() {
-        Ok(m) => Ok(m),
-        Err(_) => Err(errors::Error::FileGetMetadata),
-    }
-}
+// fn get_file_metadata(file: &fs::File) -> Result<fs::Metadata, errors::Error> {
+//     match file.metadata() {
+//         Ok(m) => Ok(m),
+//         Err(_) => Err(errors::Error::FileGetMetadata),
+//     }
+// }
 
-fn get_file_length(file: &fs::File) -> Result<u64, errors::Error> {
-    match file.metadata() {
-        Ok(m) => Ok(m.len()),
-        Err(_) => Err(errors::Error::FileGetMetadata),
-    }
-}
+// fn get_file_length(file: &fs::File) -> Result<u64, errors::Error> {
+//     match file.metadata() {
+//         Ok(m) => Ok(m.len()),
+//         Err(_) => Err(errors::Error::FileGetMetadata),
+//     }
+// }
 
 fn file_seek(file: &mut fs::File, pos: SeekFrom) -> Result<u64, errors::Error> {
     match file.seek(pos) {
@@ -115,7 +115,7 @@ impl BackupFile for fs::File {
         let mut backup_file = match fs::OpenOptions::new()
             .create(true)
             .write(true)
-            .truncate(true)
+            .read(true)
             .open(backup_file_path)
         {
             Ok(file) => file,
@@ -123,14 +123,20 @@ impl BackupFile for fs::File {
         };
         file_seek(self, SeekFrom::Start(0))?;
         let mut buffer = [0u8; READ_BUFFER_SIZE];
+        let mut total_amount=0u64;
         loop {
             let amount=file_read(self, &mut buffer)?;
             if amount==0{
-                break Ok(backup_file);
+                break;
             }
+            total_amount+=amount as u64;
             if backup_file.write_all(&mut buffer[..amount]).is_err(){
                 return Err(errors::Error::WriteBackupFile)
             }
+        }
+        match backup_file.set_len(total_amount){
+            Ok(())=>Ok(backup_file),
+            Err(_)=>Err(errors::Error::SetLengthBackupFile),
         }
     }
 }
@@ -145,15 +151,21 @@ impl RevertToBackupFile for fs::File{
         }
         file_seek(self, SeekFrom::Start(0))?;
         let mut buffer = [0u8;READ_BUFFER_SIZE];
+        let mut total_amount=0u64;
         loop{
             let amount= match backup_file.read(&mut buffer) {
                 Ok(result) => {result},
                 Err(_) => {return Err(errors::Error::ReadBackupFile);},
             };
             if amount==0{
-                return Ok(())
+                break;
             }
+            total_amount+=amount as u64;
             file_write_all(self, &buffer[..amount])?;
+        }
+        match self.set_len(total_amount){
+            Ok(())=>Ok(()),
+            Err(_)=>Err(errors::Error::SetLengthFile)
         }
     }
 }

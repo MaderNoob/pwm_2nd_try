@@ -59,7 +59,7 @@ fn lock_file_test() {
         .open("test.txt")
         .unwrap();
     let mut thread_random = rand::thread_rng();
-    file.lock("stfu", 12, &mut thread_random, "test.txt.backup", || false)
+    file.lock("stfu", 12, &mut thread_random, "test.txt.backup")
         .unwrap();
 }
 

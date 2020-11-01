@@ -7,18 +7,18 @@ use sha2::Sha512;
 use std::fs;
 
 pub trait LockFile {
-    fn lock<F: FnOnce() -> bool>(
+    fn lock(
         &mut self,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-        backup_failed_continue_anyway: F,
     ) -> Result<(), errors::Error>;
 }
 
 fn lock_file(
     file: &mut fs::File,
+    backup_file:&mut fs::File,
     key: &str,
     salt_length: usize,
     encryption_salt_buffer: &[u8],
@@ -34,13 +34,17 @@ fn lock_file(
     // as some of the values like the hmac havn't been calculated yet
     file_seek(file, SeekFrom::Start(headers_size as u64))?;
 
+    // seek to the start of the backup file
+    if backup_file.seek(SeekFrom::Start(0)).is_err(){
+        return Err(errors::Error::SeekBackupFile)
+    }
     // encrypt the file. used extra scope to dispose large buffers
     {
-        let mut file_buffer = [0u8; 1024];
-        let mut xor_key_buffer = [0u8; 1024];
+        let mut file_buffer = [0u8; READ_BUFFER_SIZE];
+        let mut xor_key_buffer = [0u8; READ_BUFFER_SIZE];
         let mut chacha = create_chacha(&key, &encryption_salt_buffer[..salt_length]);
         loop {
-            let amount = file_read(file, &mut file_buffer)?;
+            let amount = file_read(backup_file, &mut file_buffer)?;
             if amount == 0 {
                 break;
             }
@@ -49,7 +53,6 @@ fn lock_file(
                 &mut xor_key_buffer[..amount],
                 &mut chacha,
             );
-            file_seek(file, SeekFrom::Current(-(amount as i64)))?;
             file_write_all(file, &file_buffer[..amount])?;
             hmac_hasher.update(&file_buffer[..amount]);
         }
@@ -72,13 +75,12 @@ fn lock_file(
 
 #[cfg(target_family = "unix")]
 impl LockFile for fs::File {
-    fn lock<F: FnOnce() -> bool>(
+    fn lock(
         &mut self,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-        backup_failed_continue_anyway: F,
     ) -> Result<(), errors::Error> {
         let mut hash_salt_buffer = vec![0u8; salt_length];
         thread_random.fill_bytes(&mut hash_salt_buffer);
@@ -104,19 +106,11 @@ impl LockFile for fs::File {
             + encryption_salt_buffer.len()
             + std::mem::size_of::<i32>();
 
-        let backup_file = match self.backup(backup_file_name) {
-            Ok(file) => Some(file),
-            Err(e) => {
-                if backup_failed_continue_anyway() {
-                    None
-                } else {
-                    return Err(e);
-                }
-            }
-        };
+        let mut backup_file = self.backup(backup_file_name)?;
 
         match lock_file(
             self,
+            &mut backup_file,
             key,
             salt_length,
             &encryption_salt_buffer,
@@ -128,9 +122,7 @@ impl LockFile for fs::File {
         ) {
             Ok(()) => Ok(()),
             Err(e) => {
-                if let Some(mut backup) = backup_file {
-                    self.revert_to_backup(&mut backup)?;
-                }
+                self.revert_to_backup(&mut backup_file)?;
                 Err(e)
             }
         }
