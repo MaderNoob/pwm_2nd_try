@@ -87,11 +87,11 @@ impl LockFile for fs::File {
         thread_random.fill_bytes(&mut encryption_salt_buffer);
 
         // generate salted key hash
-        let mut salted_key_hash_buffer = [0u8; 65];
+        let mut salted_key_hash_buffer = [0u8; 64];
         create_salted_hash::<Sha512, _, _>(&key, &hash_salt_buffer, &mut salted_key_hash_buffer);
         // 64 bytes for the hmac itself
         // and one more byte for the null byte at the end
-        let mut hmac_buffer = [0u8; 65];
+        let mut hmac_buffer = [0u8; 64];
 
         // get file flags before locking
         let flags = self.get_unix_flags()?;
