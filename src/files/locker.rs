@@ -82,6 +82,8 @@ impl LockFile for fs::File {
         file_write_all(self, &mut hmac_buffer)?;
         file_write_all(self, &mut flags.to_ne_bytes())?;
         file_write_all(self, &mut hash_salt_buffer)?;
-        file_write_all(self, &mut encryption_salt_buffer)
+        file_write_all(self, &mut encryption_salt_buffer)?;
+
+        self.set_unix_flags(flags|(flags::UnixFileFlags::Immutable as i32))
     }
 }
