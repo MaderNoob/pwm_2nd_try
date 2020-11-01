@@ -154,6 +154,7 @@ pub struct LockedFileHeaders {
     pub hash_salt: Vec<u8>,
     pub encryption_salt: Vec<u8>,
     pub flags: i32,
+    pub headers_size: usize,
 }
 impl LockedFileHeaders {
     pub fn from_file(file: &mut fs::File) -> Result<LockedFileHeaders, errors::Error> {
@@ -169,29 +170,135 @@ impl LockedFileHeaders {
         let salt_length = usize::from_ne_bytes(salt_length_bytes);
         let mut hash_salt = vec![0u8; salt_length];
         let mut encryption_salt = vec![0u8; salt_length];
-        let mut flags_buffer=[0u8;std::mem::size_of::<i32>()];
+        let mut flags_buffer = [0u8; std::mem::size_of::<i32>()];
         if file.read_exact(&mut hash_salt).is_err()
             || file.read_exact(&mut encryption_salt).is_err()
             || file.read_exact(&mut flags_buffer).is_err()
         {
             Err(errors::Error::FileNotLocked)
-        }else{
-            Ok(LockedFileHeaders{
+        } else {
+            Ok(LockedFileHeaders {
+                headers_size: salted_key_hash.len()
+                    + hmac.len()
+                    + std::mem::size_of::<usize>()
+                    + &hash_salt.len()
+                    + &encryption_salt.len()
+                    + std::mem::size_of::<i32>(),
                 salted_key_hash,
                 hmac,
                 salt_length,
                 hash_salt,
                 encryption_salt,
-                flags:i32::from_ne_bytes(flags_buffer),
+                flags: i32::from_ne_bytes(flags_buffer),
             })
         }
     }
 }
 
-// pub trait UnlockFile{
-//     fn unlock(&mut self,key:&str)->Result<(),errors::UnlockError>;
-// }
-// #[cfg(target_family = "unix")]
-// impl UnlockFile for fs::File {
+pub trait UnlockFile {
+    fn unlock<P: AsRef<std::path::Path>>(
+        path: P,
+        key: &str,
+        backup_file_name: &str,
+    ) -> Result<(), errors::Error>;
+}
+#[cfg(target_family = "unix")]
+fn unlock_file(
+    file: &mut fs::File,
+    backup_file: &mut fs::File,
+    key: &str,
+    headers: &LockedFileHeaders,
+) -> Result<(), errors::Error> {
+    if backup_file.seek(SeekFrom::Start(headers.headers_size as u64)).is_err() {
+        return Err(errors::Error::SeekBackupFile);
+    }
+    file_seek(file, SeekFrom::Start(0))?;
+    let mut hmac_hasher = Sha512::new();
+    let mut total_amount = 0u64;
+    {
+        let mut chacha = create_chacha(key, &headers.encryption_salt);
+        let mut file_buffer = [0u8; READ_BUFFER_SIZE];
+        let mut xor_key_buffer = [0u8; READ_BUFFER_SIZE];
+        loop {
+            let amount = match backup_file.read(&mut file_buffer) {
+                Ok(result) => result,
+                Err(_) => return Err(errors::Error::ReadBackupFile),
+            };
+            if amount == 0 {
+                break;
+            }
+            total_amount += amount as u64;
+            chacha_encrypt(&mut file_buffer, &mut xor_key_buffer, &mut chacha);
+            file_write_all(file, &mut file_buffer)?;
+            hmac_hasher.update(&file_buffer);
+        }
+    }
+    let mut hmac_buffer = [0u8; 64];
+    finalize_hash_into_buffer(hmac_hasher, &mut hmac_buffer);
+    if hmac_buffer == headers.hmac {
+        return Err(errors::Error::InvalidHmac);
+    }
+    if cfg!(debug_assertion) {
+    } else {
+        file.set_unix_flags(headers.flags)?;
+    }
+    if file.set_len(total_amount).is_err() {
+        return Err(errors::Error::SetLengthFile);
+    }
+    if cfg!(debug_assertion) {
+        Ok(())
+    } else {
+        file.set_unix_flags(headers.flags)
+    }
+}
+#[cfg(target_family = "unix")]
+impl UnlockFile for fs::File {
+    fn unlock<P: AsRef<std::path::Path>>(
+        path: P,
+        key: &str,
+        backup_file_name: &str,
+    ) -> Result<(), errors::Error> {
+        let mut immutable_file = fs::OpenOptions::new().read(true).open_passwords_file(&path)?;
+        let headers = LockedFileHeaders::from_file(&mut immutable_file)?;
+        if cfg!(debug_assertion) {
+        } else {
+            immutable_file.set_unix_flags(headers.flags)?;
+        }
+        // close file so we can open it with write permissions
+        drop(immutable_file);
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open_passwords_file(&path)?;
+        let mut backup_file = file.backup(backup_file_name)?;
+        file_seek(&mut file, SeekFrom::Start(0))?;
+        let mut salted_key_hash_buffer = [0u8; 64];
+        create_salted_hash::<Sha512, _, _>(key, &headers.hash_salt, &mut salted_key_hash_buffer);
+        match {
+            if salted_key_hash_buffer == headers.salted_key_hash {
+                unlock_file(&mut file, &mut backup_file, key, &headers)
+            } else {
+                Err(errors::Error::WrongPassword)
+            }
+        } {
+            Ok(()) => {
+                // close the file before removing it
+                drop(backup_file);
+                match fs::remove_file(backup_file_name) {
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(errors::Error::RemoveBackupFile),
+                }
+            }
+            Err(e) => {
+                file.revert_to_backup(&mut backup_file)?;
 
-// }
+                // close the file before removing it
+                drop(backup_file);
+                match fs::remove_file(backup_file_name) {
+                    Ok(()) => Err(e),
+                    Err(_) => Err(errors::Error::RemoveBackupFile),
+                }
+            }
+        }
+    }
+}

@@ -14,5 +14,6 @@ pub enum Error{
     SetLengthBackupFile,
     RemoveBackupFile,
     FileNotLocked,
-    WrongPassword
+    WrongPassword,
+    InvalidHmac,
 }
