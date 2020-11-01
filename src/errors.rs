@@ -12,4 +12,7 @@ pub enum Error{
     ReadBackupFile,
     SeekBackupFile,
     SetLengthBackupFile,
+    RemoveBackupFile,
+    FileNotLocked,
+    WrongPassword
 }

@@ -3,7 +3,7 @@ mod errors;
 mod files;
 
 use files::flags::*;
-use files::locker::LockFile;
+use files::locker::*;
 use files::*;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -63,6 +63,15 @@ fn lock_file_test() {
         .unwrap();
 }
 
+fn unlock_file_test(){
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open("test.txt")
+        .unwrap();
+    let headers=LockedFileHeaders::from_file(&mut file).unwrap();
+    println!("{:?}",headers);
+}
+
 fn main() {
-    lock_file_test();
+    unlock_file_test()
 }
