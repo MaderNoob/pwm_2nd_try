@@ -24,8 +24,8 @@ fn lock_file(
     encryption_salt_buffer: &[u8],
     hash_salt_buffer: &[u8],
     salted_key_hash_buffer: &[u8],
-    hmac_buffer: &[u8],
-    hmac_hasher: Sha512,
+    hmac_buffer: &mut [u8],
+    mut hmac_hasher: Sha512,
     flags: i32,
     headers_size:usize,
 ) -> Result<(), errors::Error> {
@@ -55,7 +55,7 @@ fn lock_file(
     }
 
     // finalize hmac after updating it with encrypted file content
-    finalize_hash_into_buffer(hmac_hasher, &mut hmac_buffer);
+    finalize_hash_into_buffer(hmac_hasher, hmac_buffer);
 
     // go back to the start of the file to write the headers
     file_seek(file, SeekFrom::Start(0))?;
@@ -120,14 +120,14 @@ impl LockFile for fs::File {
             &encryption_salt_buffer[..],
             &hash_salt_buffer[..],
             &salted_key_hash_buffer,
-            &hmac_buffer,
+            &mut hmac_buffer,
             hmac_hasher,
             flags,
             headers_size
         ) {
             Ok(()) => Ok(()),
             Err(e) => {
-                if let Some(backup)=backup_file{
+                if let Some(mut backup)=backup_file{
                     self.revert_to_backup(&mut backup)?;
                 }
                 Err(e)

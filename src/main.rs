@@ -1,6 +1,6 @@
+mod encrypt;
 mod errors;
 mod files;
-mod encrypt;
 
 use files::flags::*;
 use files::locker::LockFile;
@@ -58,8 +58,9 @@ fn lock_file_test() {
         .write(true)
         .open("test.txt")
         .unwrap();
-    let mut thread_random=rand::thread_rng();
-    // file.lock("stfu", 12, &mut thread_random).unwrap();
+    let mut thread_random = rand::thread_rng();
+    file.lock("stfu", 12, &mut thread_random, "test.txt.backup", || false)
+        .unwrap();
 }
 
 fn main() {
