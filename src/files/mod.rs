@@ -115,12 +115,13 @@ impl BackupFile for fs::File {
         let mut backup_file = match fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(true)
             .open(backup_file_path)
         {
             Ok(file) => file,
             Err(_) => return Err(errors::Error::CreatBackupFile),
         };
-        file_seek(self, SeekFrom::Start(0));
+        file_seek(self, SeekFrom::Start(0))?;
         let mut buffer = [0u8; READ_BUFFER_SIZE];
         loop {
             let amount=file_read(self, &mut buffer)?;
@@ -152,7 +153,7 @@ impl RevertToBackupFile for fs::File{
             if amount==0{
                 return Ok(())
             }
-            file_write_all(self, &buffer[..amount]);
+            file_write_all(self, &buffer[..amount])?;
         }
     }
 }
