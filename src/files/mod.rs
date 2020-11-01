@@ -1,11 +1,11 @@
 pub mod flags;
+pub mod locker;
 
 use crate::errors;
 use flags::*;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use std::convert::TryInto;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -33,14 +33,14 @@ fn file_seek(file: &mut fs::File, pos: SeekFrom) -> Result<u64, errors::Error> {
 fn file_write_all(file: &mut fs::File, buf: &mut [u8]) -> Result<(), errors::Error> {
     match file.write_all(buf) {
         Ok(()) => Ok(()),
-        Err(e) => Err(errors::Error::WriteFile),
+        Err(_) => Err(errors::Error::WriteFile),
     }
 }
 
 fn file_read(file: &mut fs::File, buf: &mut [u8]) -> Result<usize, errors::Error> {
     match file.read(buf) {
         Ok(result) => Ok(result),
-        Err(e) => Err(errors::Error::ReadFile),
+        Err(_) => Err(errors::Error::ReadFile),
     }
 }
 
@@ -88,50 +88,19 @@ impl XorPasswordsFile for fs::File {
     }
 }
 
-pub struct LockPasswordsFileResult {
+pub struct MakeFileImmutableResult {
     pub flags_before_lock: i32,
 }
-pub trait LockPasswordsFile {
-    fn lock_passwords_file(&mut self) -> Result<LockPasswordsFileResult, errors::Error>;
+pub trait MakeFileImmutable {
+    fn make_immutable(&mut self) -> Result<MakeFileImmutableResult, errors::Error>;
 }
 #[cfg(target_family = "unix")]
-impl LockPasswordsFile for fs::File {
-    fn lock_passwords_file(&mut self) -> Result<LockPasswordsFileResult, errors::Error> {
+impl MakeFileImmutable for fs::File {
+    fn make_immutable(&mut self) -> Result<MakeFileImmutableResult, errors::Error> {
         let flags = self.get_unix_flags()?;
         self.set_unix_flags(flags | (UnixFileFlags::Immutable as i32))?;
-        Ok(LockPasswordsFileResult {
+        Ok(MakeFileImmutableResult {
             flags_before_lock: flags,
         })
-    }
-}
-
-pub trait EncryptPasswordsFile {
-    fn encrypt_passwords_file<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), errors::Error>;
-}
-impl EncryptPasswordsFile for fs::File {
-    fn encrypt_passwords_file<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), errors::Error> {
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        let seed_bytes = hasher.finalize();
-        let mut seed = [0u8; 32];
-        for (index, byte) in seed_bytes.as_slice().iter().enumerate() {
-            seed[index] = *byte;
-        }
-        let mut chacha = ChaCha20Rng::from_seed(seed);
-        let mut xor_key_buffer = [0u8; 1024];
-        let mut file_buffer = [0u8; 1024];
-        loop {
-            let amount = file_read(self, &mut file_buffer)?;
-            if amount == 0 {
-                break Ok(());
-            }
-            // generate key
-            chacha.fill_bytes(&mut xor_key_buffer[..amount]);
-            for i in 0..amount {
-                file_buffer[i] ^= xor_key_buffer[i];
-            }
-            file_seek(self, SeekFrom::Current(-(amount as i64)))?;
-            file_write_all(self, &mut file_buffer[..amount])?;
-        }
     }
 }

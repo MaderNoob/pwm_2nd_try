@@ -1,9 +1,11 @@
 mod errors;
 mod files;
+mod encrypt;
 
 use files::flags::*;
+use files::locker::LockFile;
 use files::*;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 fn xor_file_test() {
@@ -40,40 +42,25 @@ fn file_flags_test() {
     println!("new flags: {}", file_flags);
 }
 
+fn make_immutable_test() {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open("test.txt")
+        .unwrap();
+    file.make_immutable().unwrap();
+}
+
 fn lock_file_test() {
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .open("test.txt")
         .unwrap();
-    file.lock_passwords_file().unwrap();
-}
-
-fn encrypt_file_test() {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .read(true)
-        .open("test.txt")
-        .unwrap();
-    let metadata = file.metadata().unwrap();
-    if metadata.len() == 0 {
-        file.write_all(b"hello world").unwrap();
-    }
-    file.encrypt_passwords_file("hello").unwrap();
-    file.seek(SeekFrom::Start(0)).unwrap();
-    let mut content = String::new();
-    match file.read_to_string(&mut content) {
-        Ok(_) => println!("'{}'", content),
-        Err(_) => {
-            let mut bytes= [0u8;1024];
-            file.seek(SeekFrom::Start(0)).unwrap();
-            let amount=file.read(&mut bytes).unwrap();
-            println!("{:?}", &bytes[..amount]);
-        }
-    }
+    let mut thread_random=rand::thread_rng();
+    file.lock("hello there noob kid", 12, &mut thread_random).unwrap();
 }
 
 fn main() {
-    encrypt_file_test();
+    lock_file_test();
 }
