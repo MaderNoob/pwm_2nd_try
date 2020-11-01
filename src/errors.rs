@@ -8,4 +8,8 @@ pub enum Error{
     FileSetPermissions,
     FileGetFlags,
     FileSetFlags,
+    CreatBackupFile,
+    WriteBackupFile,
+    ReadBackupFile,
+    SeekBackupFile,
 }

@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 
+pub const READ_BUFFER_SIZE: usize = 1024;
+
 fn get_file_metadata(file: &fs::File) -> Result<fs::Metadata, errors::Error> {
     match file.metadata() {
         Ok(m) => Ok(m),
@@ -30,7 +32,7 @@ fn file_seek(file: &mut fs::File, pos: SeekFrom) -> Result<u64, errors::Error> {
     }
 }
 
-fn file_write_all(file: &mut fs::File, buf: &mut [u8]) -> Result<(), errors::Error> {
+fn file_write_all(file: &mut fs::File, buf: &[u8]) -> Result<(), errors::Error> {
     match file.write_all(buf) {
         Ok(()) => Ok(()),
         Err(_) => Err(errors::Error::WriteFile),
@@ -70,7 +72,7 @@ impl XorPasswordsFile for fs::File {
         let key_bytes = key.as_ref();
         let ket_bytes_length = key_bytes.len();
         let mut key_index = 0;
-        let mut buffer = [0u8; 1024];
+        let mut buffer = [0u8; READ_BUFFER_SIZE];
         let mut file_cursor_position = 0u64;
         loop {
             let amount = file_read(self, &mut buffer)?;
@@ -82,7 +84,7 @@ impl XorPasswordsFile for fs::File {
                 key_index = (key_index + 1) % ket_bytes_length;
             }
             file_seek(self, SeekFrom::Start(file_cursor_position))?;
-            file_write_all(self, &mut buffer[..amount])?;
+            file_write_all(self, &buffer[..amount])?;
             file_cursor_position += amount as u64;
         }
     }
@@ -102,5 +104,55 @@ impl MakeFileImmutable for fs::File {
         Ok(MakeFileImmutableResult {
             flags_before_lock: flags,
         })
+    }
+}
+
+pub trait BackupFile {
+    fn backup(&mut self, backup_file_path: &str) -> Result<fs::File, errors::Error>;
+}
+impl BackupFile for fs::File {
+    fn backup(&mut self, backup_file_path: &str) -> Result<fs::File, errors::Error> {
+        let mut backup_file = match fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(backup_file_path)
+        {
+            Ok(file) => file,
+            Err(_) => return Err(errors::Error::CreatBackupFile),
+        };
+        file_seek(self, SeekFrom::Start(0));
+        let mut buffer = [0u8; READ_BUFFER_SIZE];
+        loop {
+            let amount=file_read(self, &mut buffer)?;
+            if amount==0{
+                break Ok(backup_file);
+            }
+            if backup_file.write_all(&mut buffer[..amount]).is_err(){
+                return Err(errors::Error::WriteBackupFile)
+            }
+        }
+    }
+}
+
+pub trait RevertToBackupFile{
+    fn revert_to_backup(&mut self,backup_file:&mut fs::File)->Result<(),errors::Error>;
+}
+impl RevertToBackupFile for fs::File{
+    fn revert_to_backup(&mut self, backup_file:&mut fs::File)->Result<(),errors::Error>{
+        if backup_file.seek(SeekFrom::Start(0)).is_err(){
+            return Err(errors::Error::SeekBackupFile)
+        }
+        file_seek(self, SeekFrom::Start(0))?;
+        let mut buffer = [0u8;READ_BUFFER_SIZE];
+        loop{
+            let amount= match backup_file.read(&mut buffer) {
+                Ok(result) => {result},
+                Err(_) => {return Err(errors::Error::ReadBackupFile);},
+            };
+            if amount==0{
+                return Ok(())
+            }
+            file_write_all(self, &buffer[..amount]);
+        }
     }
 }

@@ -5,23 +5,78 @@ use rand::rngs::ThreadRng;
 use rand::RngCore;
 use sha2::Sha512;
 use std::fs;
-use std::io::{BufRead, BufReader};
 
 pub trait LockFile {
-    fn lock(
+    fn lock<F:FnOnce()->bool>(
         &mut self,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
+        backup_file_name: &str,
+        backup_failed_continue_anyway:F,
     ) -> Result<(), errors::Error>;
 }
+
+fn lock_file(
+    file: &mut fs::File,
+    key: &str,
+    salt_length: usize,
+    encryption_salt_buffer: &[u8],
+    hash_salt_buffer: &[u8],
+    salted_key_hash_buffer: &[u8],
+    hmac_buffer: &[u8],
+    hmac_hasher: Sha512,
+    flags: i32,
+    headers_size:usize,
+) -> Result<(), errors::Error> {
+    // leave the headers empty for now,
+    // as some of the values like the hmac havn't been calculated yet
+    file_seek(file, SeekFrom::Start(headers_size as u64))?;
+
+    // encrypt the file. used extra scope to dispose large buffers
+    {
+        let mut file_buffer = [0u8; 1024];
+        let mut xor_key_buffer = [0u8; 1024];
+        let mut chacha = create_chacha(&key, &encryption_salt_buffer[..salt_length]);
+        loop {
+            let amount = file_read(file, &mut file_buffer)?;
+            if amount == 0 {
+                break;
+            }
+            chacha_encrypt(
+                &mut file_buffer[..amount],
+                &mut xor_key_buffer[..amount],
+                &mut chacha,
+            );
+            file_seek(file, SeekFrom::Current(-(amount as i64)))?;
+            file_write_all(file, &file_buffer[..amount])?;
+            hmac_hasher.update(&file_buffer[..amount]);
+        }
+    }
+
+    // finalize hmac after updating it with encrypted file content
+    finalize_hash_into_buffer(hmac_hasher, &mut hmac_buffer);
+
+    // go back to the start of the file to write the headers
+    file_seek(file, SeekFrom::Start(0))?;
+
+    file_write_all(file, &salted_key_hash_buffer)?;
+    file_write_all(file, &hmac_buffer)?;
+    file_write_all(file, &flags.to_ne_bytes())?;
+    file_write_all(file, &hash_salt_buffer)?;
+    file_write_all(file, &encryption_salt_buffer)?;
+    file.set_unix_flags(flags | (flags::UnixFileFlags::Immutable as i32))
+}
+
 #[cfg(target_family = "unix")]
 impl LockFile for fs::File {
-    fn lock(
+    fn lock<F:FnOnce()->bool>(
         &mut self,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
+        backup_file_name: &str,
+        backup_failed_continue_anyway:F,
     ) -> Result<(), errors::Error> {
         let mut hash_salt_buffer = vec![0u8; salt_length + 1];
         thread_random.fill_bytes(&mut hash_salt_buffer[..salt_length]);
@@ -47,43 +102,36 @@ impl LockFile for fs::File {
             + hash_salt_buffer.len()
             + encryption_salt_buffer.len();
 
-        // leave the headers empty for now,
-        // as some of the values like the hmac havn't been calculated yet
-        file_seek(self, SeekFrom::Start(headers_size as u64))?;
-
-        // encrypt the file. used extra scope to dispose large buffers
-        {
-            let mut file_buffer = [0u8; 1024];
-            let mut xor_key_buffer = [0u8; 1024];
-            let mut chacha = create_chacha(&key, &encryption_salt_buffer[..salt_length]);
-            loop {
-                let amount = file_read(self, &mut file_buffer)?;
-                if amount == 0 {
-                    break;
+        let backup_file = match self.backup(backup_file_name){
+            Ok(file)=>Some(file),
+            Err(e)=>{
+                if backup_failed_continue_anyway(){
+                    None
+                }else{
+                    return Err(e)
                 }
-                chacha_encrypt(
-                    &mut file_buffer[..amount],
-                    &mut xor_key_buffer[..amount],
-                    &mut chacha,
-                );
-                file_seek(self, SeekFrom::Current(-(amount as i64)))?;
-                file_write_all(self, &mut file_buffer[..amount])?;
-                hmac_hasher.update(&file_buffer[..amount]);
+            }
+        };
+
+        match lock_file(
+            self,
+            key,
+            salt_length,
+            &encryption_salt_buffer[..],
+            &hash_salt_buffer[..],
+            &salted_key_hash_buffer,
+            &hmac_buffer,
+            hmac_hasher,
+            flags,
+            headers_size
+        ) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if let Some(backup)=backup_file{
+                    self.revert_to_backup(&mut backup)?;
+                }
+                Err(e)
             }
         }
-
-        // finalize hmac after updating it with encrypted file content
-        finalize_hash_into_buffer(hmac_hasher, &mut hmac_buffer);
-
-        // go back to the start of the file to write the headers
-        file_seek(self, SeekFrom::Start(0))?;
-
-        file_write_all(self, &mut salted_key_hash_buffer)?;
-        file_write_all(self, &mut hmac_buffer)?;
-        file_write_all(self, &mut flags.to_ne_bytes())?;
-        file_write_all(self, &mut hash_salt_buffer)?;
-        file_write_all(self, &mut encryption_salt_buffer)?;
-
-        self.set_unix_flags(flags|(flags::UnixFileFlags::Immutable as i32))
     }
 }

@@ -54,11 +54,12 @@ fn make_immutable_test() {
 fn lock_file_test() {
     let mut file = OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
         .open("test.txt")
         .unwrap();
     let mut thread_random=rand::thread_rng();
-    file.lock("hello there noob kid", 12, &mut thread_random).unwrap();
+    // file.lock("stfu", 12, &mut thread_random).unwrap();
 }
 
 fn main() {
