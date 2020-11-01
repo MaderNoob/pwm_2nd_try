@@ -8,5 +8,4 @@ pub enum Error{
     FileSetPermissions,
     FileGetFlags,
     FileSetFlags,
-    FileTooBig,
 }
