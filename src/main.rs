@@ -2,7 +2,6 @@ mod encrypt;
 mod errors;
 mod files;
 mod commands;
-mod input;
 
 use files::flags::*;
 use files::locker::*;
