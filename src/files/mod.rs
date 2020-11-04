@@ -90,23 +90,6 @@ impl XorPasswordsFile for fs::File {
     }
 }
 
-pub struct MakeFileImmutableResult {
-    pub flags_before_lock: i32,
-}
-pub trait MakeFileImmutable {
-    fn make_immutable(&mut self) -> Result<MakeFileImmutableResult, errors::Error>;
-}
-#[cfg(target_family = "unix")]
-impl MakeFileImmutable for fs::File {
-    fn make_immutable(&mut self) -> Result<MakeFileImmutableResult, errors::Error> {
-        let flags = self.get_unix_flags()?;
-        self.set_unix_flags(flags | (UnixFileFlags::Immutable as i32))?;
-        Ok(MakeFileImmutableResult {
-            flags_before_lock: flags,
-        })
-    }
-}
-
 pub trait BackupFile {
     fn backup(&mut self, backup_file_path: &str) -> Result<fs::File, errors::Error>;
 }

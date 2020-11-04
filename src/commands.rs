@@ -1,5 +1,5 @@
 use crate::errors::Error;
-use crate::locker::{LockFile,UnlockFile};
+use crate::locker::{LockFile, ReadLockedFileHeaders, UnlockFile};
 use std::fs;
 
 pub const DEFAULT_SALT_LENGTH: usize = 20;
@@ -59,8 +59,8 @@ fn handle_error(error: Error, path: &str, backup_file_path: &str, error_style: &
         Error::InvalidHmac => StringErrorMessage::Str("Invalid HMAC for file"),
     };
     match error_message {
-        StringErrorMessage::Str(msg) => eprintln!("{}",error_style.paint(msg)),
-        StringErrorMessage::String(msg) => eprintln!("{}",error_style.paint(&msg[..])),
+        StringErrorMessage::Str(msg) => eprintln!("{}", error_style.paint(msg)),
+        StringErrorMessage::String(msg) => eprintln!("{}", error_style.paint(&msg[..])),
     }
 }
 
@@ -92,30 +92,53 @@ fn lock(path: &str, key: &str, salt_length: Option<usize>) {
             if let Error::WrongPassword = error {
                 eprintln!("{}", error_style.paint("An unexpected error has occured"));
             } else {
-                handle_error(error, path, &backup_file_name[..],&error_style);
+                handle_error(error, path, &backup_file_name[..], &error_style);
             }
         }
     }
 }
 
-fn unlock(path: &str, key: &str) {
+fn unlock(path: &str) {
     let backup_file_name = get_backup_file_name(path);
     let error_style = get_error_message_style();
     let success_style = get_success_message_style();
-    match fs::File::unlock_file(
-        path,
-        key,
-        &backup_file_name[..],
-    ) {
-        Ok(()) => println!(
-            "{}",
-            success_style.paint("The target file was successfully locked")
-        ),
+    let headers = match fs::File::read_locked_file_headers(path) {
+        Ok(headers) => headers,
         Err(error) => {
             if let Error::WrongPassword = error {
                 eprintln!("{}", error_style.paint("An unexpected error has occured"));
             } else {
-                handle_error(error, path, &backup_file_name[..],&error_style);
+                handle_error(error, path, &backup_file_name[..], &error_style);
+            }
+            return;
+        }
+    };
+    loop {
+        let key = match rpassword::read_password_from_tty(Some(
+            "Enter the password for the target file:",
+        )) {
+            Ok(key) => key,
+            Err(_) => {
+                eprintln!(
+                    "{}",
+                    error_style.paint(
+                        "An unexpected IO error has occured \
+                    while trying to prompt the user to enter a password"
+                    )
+                );
+                return;
+            }
+        };
+        match fs::File::unlock_file(path, key.as_ref(), &backup_file_name[..], &headers) {
+            Ok(()) => println!(
+                "{}",
+                success_style.paint("The target file was successfully unlocked")
+            ),
+            Err(error) => {
+                if let Error::WrongPassword = error {
+                } else {
+                    handle_error(error, path, &backup_file_name[..], &error_style);
+                }
             }
         }
     }
