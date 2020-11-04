@@ -14,6 +14,13 @@ pub trait LockFile {
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
     ) -> Result<(), errors::Error>;
+    fn lock_file<P: AsRef<std::path::Path>>(
+        path: P,
+        key: &str,
+        salt_length: usize,
+        thread_random: &mut ThreadRng,
+        backup_file_name: &str,
+    ) -> Result<(), errors::Error>;
 }
 
 fn lock_file(
@@ -77,7 +84,6 @@ fn lock_file(
     }
 }
 
-#[cfg(target_family = "unix")]
 impl LockFile for fs::File {
     fn lock(
         &mut self,
@@ -144,20 +150,32 @@ impl LockFile for fs::File {
             }
         }
     }
+    fn lock_file<P: AsRef<std::path::Path>>(
+        path: P,
+        key: &str,
+        salt_length: usize,
+        thread_random: &mut ThreadRng,
+        backup_file_name: &str,
+    ) -> Result<(), errors::Error> {
+        match fs::OpenOptions::new().read(true).write(true).open(path) {
+            Ok(mut file) => file.lock(key, salt_length, thread_random, backup_file_name),
+            Err(_) => Err(errors::Error::OpenFile),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct LockedFileHeaders {
-    pub salted_key_hash: [u8; 64],
-    pub hmac: [u8; 64],
-    pub salt_length: usize,
-    pub hash_salt: Vec<u8>,
-    pub encryption_salt: Vec<u8>,
-    pub flags: i32,
-    pub headers_size: usize,
+    salted_key_hash: [u8; 64],
+    hmac: [u8; 64],
+    salt_length: usize,
+    hash_salt: Vec<u8>,
+    encryption_salt: Vec<u8>,
+    flags: i32,
+    headers_size: usize,
 }
 impl LockedFileHeaders {
-    pub fn from_file(file: &mut fs::File) -> Result<LockedFileHeaders, errors::Error> {
+    fn from_file(file: &mut fs::File) -> Result<LockedFileHeaders, errors::Error> {
         let mut salted_key_hash = [0u8; 64];
         let mut hmac = [0u8; 64];
         let mut salt_length_bytes = [0u8; std::mem::size_of::<usize>()];
@@ -195,11 +213,33 @@ impl LockedFileHeaders {
     }
 }
 
+pub trait ReadLockedFileHeaders {
+    fn read_locked_file_headers<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<LockedFileHeaders, errors::Error>;
+}
+impl ReadLockedFileHeaders for fs::File {
+    fn read_locked_file_headers<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<LockedFileHeaders, errors::Error> {
+        let mut immutable_file = fs::OpenOptions::new()
+            .read(true)
+            .open_passwords_file(&path)?;
+        let headers = LockedFileHeaders::from_file(&mut immutable_file)?;
+        if cfg!(debug_assertion) {
+        } else {
+            immutable_file.set_unix_flags(headers.flags)?;
+        }
+        Ok(headers)
+    }
+}
+
 pub trait UnlockFile {
-    fn unlock<P: AsRef<std::path::Path>>(
+    fn unlock_file<P: AsRef<std::path::Path>>(
         path: P,
         key: &str,
         backup_file_name: &str,
+        headers: &LockedFileHeaders,
     ) -> Result<(), errors::Error>;
 }
 #[cfg(target_family = "unix")]
@@ -209,7 +249,10 @@ fn unlock_file(
     key: &str,
     headers: &LockedFileHeaders,
 ) -> Result<(), errors::Error> {
-    if backup_file.seek(SeekFrom::Start(headers.headers_size as u64)).is_err() {
+    if backup_file
+        .seek(SeekFrom::Start(headers.headers_size as u64))
+        .is_err()
+    {
         return Err(errors::Error::SeekBackupFile);
     }
     file_seek(file, SeekFrom::Start(0))?;
@@ -238,34 +281,23 @@ fn unlock_file(
     if hmac_buffer == headers.hmac {
         return Err(errors::Error::InvalidHmac);
     }
-    if cfg!(debug_assertion) {
-    } else {
-        file.set_unix_flags(headers.flags)?;
-    }
     if file.set_len(total_amount).is_err() {
         return Err(errors::Error::SetLengthFile);
     }
-    if cfg!(debug_assertion) {
+    if cfg!(unix) {
         Ok(())
     } else {
         file.set_unix_flags(headers.flags)
     }
 }
-#[cfg(target_family = "unix")]
 impl UnlockFile for fs::File {
-    fn unlock<P: AsRef<std::path::Path>>(
+    fn unlock_file<P: AsRef<std::path::Path>>(
         path: P,
         key: &str,
         backup_file_name: &str,
+        headers:&LockedFileHeaders,
     ) -> Result<(), errors::Error> {
-        let mut immutable_file = fs::OpenOptions::new().read(true).open_passwords_file(&path)?;
-        let headers = LockedFileHeaders::from_file(&mut immutable_file)?;
-        if cfg!(debug_assertion) {
-        } else {
-            immutable_file.set_unix_flags(headers.flags)?;
-        }
         // close file so we can open it with write permissions
-        drop(immutable_file);
         let mut file = fs::OpenOptions::new()
             .read(true)
             .write(true)
