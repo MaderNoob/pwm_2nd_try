@@ -152,3 +152,17 @@ impl RevertToBackupFile for fs::File{
         }
     }
 }
+
+#[macro_export]
+macro_rules! file_read_primitive {
+    ($file:expr,$primitive_type:ty) => {
+        {
+            use std::io::Read;
+            let mut bytes=[0u8;std::mem::size_of::<$primitive_type>()];
+            match $file.read_exact(&mut bytes){
+                Ok(())=>Ok(<$primitive_type>::from_ne_bytes(bytes)),
+                Err(e)=>Err(e)
+            }
+        }
+    };
+}
