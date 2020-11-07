@@ -1,5 +1,5 @@
 #[derive(Debug)]
-pub enum Error{
+pub enum LockerError{
     OpenFile,
     ReadFile,
     SeekFile,
@@ -16,4 +16,8 @@ pub enum Error{
     FileNotLocked,
     WrongPassword,
     InvalidHmac,
+}
+
+pub enum PasswordManagerError{
+    ReadPasswordsFile,
 }

@@ -1,4 +1,4 @@
-use crate::errors::Error;
+use crate::errors::LockerError;
 use crate::locker::{LockFile, ReadLockedFileHeaders, UnlockFile};
 use std::fs;
 
@@ -15,48 +15,48 @@ enum StringErrorMessage {
 
 // handles every error except the WrongPassword error,
 // which should be handled before calling this function
-fn handle_error(error: Error, path: &str, backup_file_path: &str, error_style: &ansi_term::Style) {
+fn handle_error(error: LockerError, path: &str, backup_file_path: &str, error_style: &ansi_term::Style) {
     let error_message = match error {
-        Error::OpenFile => {
+        LockerError::OpenFile => {
             StringErrorMessage::String(format!("Failed to open the target file: \"{}\"", path))
         }
-        Error::ReadFile => StringErrorMessage::Str("Failed to read from the target file"),
-        Error::SeekFile => StringErrorMessage::Str("Failed to seek on the target file"),
-        Error::WriteFile => StringErrorMessage::Str("Failed to write to the target file"),
-        Error::SetLengthFile => {
+        LockerError::ReadFile => StringErrorMessage::Str("Failed to read from the target file"),
+        LockerError::SeekFile => StringErrorMessage::Str("Failed to seek on the target file"),
+        LockerError::WriteFile => StringErrorMessage::Str("Failed to write to the target file"),
+        LockerError::SetLengthFile => {
             StringErrorMessage::Str("Failed to set the length of the target file")
         }
-        Error::FileGetFlags => StringErrorMessage::Str("Failed to get flags of the target file"),
-        Error::FileSetFlags => StringErrorMessage::Str("Failed to set flags for the target file"),
-        Error::CreatBackupFile => StringErrorMessage::String(format!(
+        LockerError::FileGetFlags => StringErrorMessage::Str("Failed to get flags of the target file"),
+        LockerError::FileSetFlags => StringErrorMessage::Str("Failed to set flags for the target file"),
+        LockerError::CreatBackupFile => StringErrorMessage::String(format!(
             "Failed to create a backup file: \"{}\"",
             backup_file_path
         )),
-        Error::WriteBackupFile => StringErrorMessage::String(format!(
+        LockerError::WriteBackupFile => StringErrorMessage::String(format!(
             "Failed to write to the backup file: \"{}\"",
             backup_file_path
         )),
-        Error::ReadBackupFile => StringErrorMessage::String(format!(
+        LockerError::ReadBackupFile => StringErrorMessage::String(format!(
             "Failed to read from the backup file: \"{}\"",
             backup_file_path
         )),
-        Error::SeekBackupFile => StringErrorMessage::String(format!(
+        LockerError::SeekBackupFile => StringErrorMessage::String(format!(
             "Failed to seek on the backup file: \"{}\"",
             backup_file_path
         )),
-        Error::SetLengthBackupFile => StringErrorMessage::String(format!(
+        LockerError::SetLengthBackupFile => StringErrorMessage::String(format!(
             "Failed to set the length of the the backup file: \"{}\"",
             backup_file_path
         )),
-        Error::RemoveBackupFile => StringErrorMessage::String(format!(
+        LockerError::RemoveBackupFile => StringErrorMessage::String(format!(
             "Failed to remove the the backup file: \"{}\"",
             backup_file_path
         )),
-        Error::FileNotLocked => StringErrorMessage::Str("The target file is not locked"),
-        Error::WrongPassword => {
+        LockerError::FileNotLocked => StringErrorMessage::Str("The target file is not locked"),
+        LockerError::WrongPassword => {
             panic!("Wrong password error should be handled oustside of this function")
         }
-        Error::InvalidHmac => StringErrorMessage::Str("Invalid HMAC for file"),
+        LockerError::InvalidHmac => StringErrorMessage::Str("Invalid HMAC for file"),
     };
     match error_message {
         StringErrorMessage::Str(msg) => eprintln!("{}", error_style.paint(msg)),
@@ -89,7 +89,7 @@ fn lock(path: &str, key: &str, salt_length: Option<usize>) {
             success_style.paint("The target file was successfully locked")
         ),
         Err(error) => {
-            if let Error::WrongPassword = error {
+            if let LockerError::WrongPassword = error {
                 eprintln!("{}", error_style.paint("An unexpected error has occured"));
             } else {
                 handle_error(error, path, &backup_file_name[..], &error_style);
@@ -105,7 +105,7 @@ fn unlock(path: &str) {
     let headers = match fs::File::read_locked_file_headers(path) {
         Ok(headers) => headers,
         Err(error) => {
-            if let Error::WrongPassword = error {
+            if let LockerError::WrongPassword = error {
                 eprintln!("{}", error_style.paint("An unexpected error has occured"));
             } else {
                 handle_error(error, path, &backup_file_name[..], &error_style);
@@ -135,7 +135,7 @@ fn unlock(path: &str) {
                 success_style.paint("The target file was successfully unlocked")
             ),
             Err(error) => {
-                if let Error::WrongPassword = error {
+                if let LockerError::WrongPassword = error {
                 } else {
                     handle_error(error, path, &backup_file_name[..], &error_style);
                 }
@@ -143,3 +143,5 @@ fn unlock(path: &str) {
         }
     }
 }
+
+// fn new(password:String,domain:String,username:String);

@@ -13,14 +13,14 @@ pub trait LockFile {
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-    ) -> Result<(), errors::Error>;
+    ) -> Result<(), errors::LockerError>;
     fn lock_file<P: AsRef<std::path::Path>>(
         path: P,
         key: &str,
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-    ) -> Result<(), errors::Error>;
+    ) -> Result<(), errors::LockerError>;
 }
 
 fn lock_file(
@@ -34,7 +34,7 @@ fn lock_file(
     hmac_buffer: &mut [u8],
     flags: i32,
     headers_size: usize,
-) -> Result<(), errors::Error> {
+) -> Result<(), errors::LockerError> {
     let mut hmac_hasher = Sha512::new();
 
     // leave the headers empty for now,
@@ -43,7 +43,7 @@ fn lock_file(
 
     // seek to the start of the backup file
     if backup_file.seek(SeekFrom::Start(0)).is_err() {
-        return Err(errors::Error::SeekBackupFile);
+        return Err(errors::LockerError::SeekBackupFile);
     }
     // encrypt the file. used extra scope to dispose large buffers
     {
@@ -91,7 +91,7 @@ impl LockFile for fs::File {
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), errors::LockerError> {
         let mut hash_salt_buffer = vec![0u8; salt_length];
         thread_random.fill_bytes(&mut hash_salt_buffer);
 
@@ -135,7 +135,7 @@ impl LockFile for fs::File {
                 drop(backup_file);
                 match fs::remove_file(backup_file_name) {
                     Ok(()) => Ok(()),
-                    Err(_) => Err(errors::Error::RemoveBackupFile),
+                    Err(_) => Err(errors::LockerError::RemoveBackupFile),
                 }
             }
             Err(e) => {
@@ -145,7 +145,7 @@ impl LockFile for fs::File {
                 drop(backup_file);
                 match fs::remove_file(backup_file_name) {
                     Ok(()) => Err(e),
-                    Err(_) => Err(errors::Error::RemoveBackupFile),
+                    Err(_) => Err(errors::LockerError::RemoveBackupFile),
                 }
             }
         }
@@ -156,10 +156,10 @@ impl LockFile for fs::File {
         salt_length: usize,
         thread_random: &mut ThreadRng,
         backup_file_name: &str,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), errors::LockerError> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(mut file) => file.lock(key, salt_length, thread_random, backup_file_name),
-            Err(_) => Err(errors::Error::OpenFile),
+            Err(_) => Err(errors::LockerError::OpenFile),
         }
     }
 }
@@ -175,7 +175,7 @@ pub struct LockedFileHeaders {
     headers_size: usize,
 }
 impl LockedFileHeaders {
-    fn from_file(file: &mut fs::File) -> Result<LockedFileHeaders, errors::Error> {
+    fn from_file(file: &mut fs::File) -> Result<LockedFileHeaders, errors::LockerError> {
         let mut salted_key_hash = [0u8; 64];
         let mut hmac = [0u8; 64];
         let mut salt_length_bytes = [0u8; std::mem::size_of::<usize>()];
@@ -183,7 +183,7 @@ impl LockedFileHeaders {
             || file.read_exact(&mut hmac).is_err()
             || file.read_exact(&mut salt_length_bytes).is_err()
         {
-            return Err(errors::Error::FileNotLocked);
+            return Err(errors::LockerError::FileNotLocked);
         }
         let salt_length = usize::from_ne_bytes(salt_length_bytes);
         let mut hash_salt = vec![0u8; salt_length];
@@ -193,7 +193,7 @@ impl LockedFileHeaders {
             || file.read_exact(&mut encryption_salt).is_err()
             || file.read_exact(&mut flags_buffer).is_err()
         {
-            Err(errors::Error::FileNotLocked)
+            Err(errors::LockerError::FileNotLocked)
         } else {
             Ok(LockedFileHeaders {
                 headers_size: salted_key_hash.len()
@@ -216,12 +216,12 @@ impl LockedFileHeaders {
 pub trait ReadLockedFileHeaders {
     fn read_locked_file_headers<P: AsRef<std::path::Path>>(
         path: P,
-    ) -> Result<LockedFileHeaders, errors::Error>;
+    ) -> Result<LockedFileHeaders, errors::LockerError>;
 }
 impl ReadLockedFileHeaders for fs::File {
     fn read_locked_file_headers<P: AsRef<std::path::Path>>(
         path: P,
-    ) -> Result<LockedFileHeaders, errors::Error> {
+    ) -> Result<LockedFileHeaders, errors::LockerError> {
         let mut immutable_file = fs::OpenOptions::new()
             .read(true)
             .open_passwords_file(&path)?;
@@ -240,7 +240,7 @@ pub trait UnlockFile {
         key: &str,
         backup_file_name: &str,
         headers: &LockedFileHeaders,
-    ) -> Result<(), errors::Error>;
+    ) -> Result<(), errors::LockerError>;
 }
 #[cfg(target_family = "unix")]
 fn unlock_file(
@@ -248,12 +248,12 @@ fn unlock_file(
     backup_file: &mut fs::File,
     key: &str,
     headers: &LockedFileHeaders,
-) -> Result<(), errors::Error> {
+) -> Result<(), errors::LockerError> {
     if backup_file
         .seek(SeekFrom::Start(headers.headers_size as u64))
         .is_err()
     {
-        return Err(errors::Error::SeekBackupFile);
+        return Err(errors::LockerError::SeekBackupFile);
     }
     file_seek(file, SeekFrom::Start(0))?;
     let mut hmac_hasher = Sha512::new();
@@ -265,7 +265,7 @@ fn unlock_file(
         loop {
             let amount = match backup_file.read(&mut file_buffer) {
                 Ok(result) => result,
-                Err(_) => return Err(errors::Error::ReadBackupFile),
+                Err(_) => return Err(errors::LockerError::ReadBackupFile),
             };
             if amount == 0 {
                 break;
@@ -279,10 +279,10 @@ fn unlock_file(
     let mut hmac_buffer = [0u8; 64];
     finalize_hash_into_buffer(hmac_hasher, &mut hmac_buffer);
     if hmac_buffer == headers.hmac {
-        return Err(errors::Error::InvalidHmac);
+        return Err(errors::LockerError::InvalidHmac);
     }
     if file.set_len(total_amount).is_err() {
-        return Err(errors::Error::SetLengthFile);
+        return Err(errors::LockerError::SetLengthFile);
     }
     if cfg!(unix) {
         Ok(())
@@ -296,7 +296,7 @@ impl UnlockFile for fs::File {
         key: &str,
         backup_file_name: &str,
         headers:&LockedFileHeaders,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), errors::LockerError> {
         // close file so we can open it with write permissions
         let mut file = fs::OpenOptions::new()
             .read(true)
@@ -310,7 +310,7 @@ impl UnlockFile for fs::File {
             if salted_key_hash_buffer == headers.salted_key_hash {
                 unlock_file(&mut file, &mut backup_file, key, &headers)
             } else {
-                Err(errors::Error::WrongPassword)
+                Err(errors::LockerError::WrongPassword)
             }
         } {
             Ok(()) => {
@@ -318,7 +318,7 @@ impl UnlockFile for fs::File {
                 drop(backup_file);
                 match fs::remove_file(backup_file_name) {
                     Ok(()) => Ok(()),
-                    Err(_) => Err(errors::Error::RemoveBackupFile),
+                    Err(_) => Err(errors::LockerError::RemoveBackupFile),
                 }
             }
             Err(e) => {
@@ -328,7 +328,7 @@ impl UnlockFile for fs::File {
                 drop(backup_file);
                 match fs::remove_file(backup_file_name) {
                     Ok(()) => Err(e),
-                    Err(_) => Err(errors::Error::RemoveBackupFile),
+                    Err(_) => Err(errors::LockerError::RemoveBackupFile),
                 }
             }
         }
