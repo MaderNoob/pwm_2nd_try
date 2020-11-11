@@ -3,27 +3,11 @@ pub mod locker;
 
 use crate::errors;
 use flags::*;
-use rand_chacha::rand_core::{RngCore, SeedableRng};
-use rand_chacha::ChaCha20Rng;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const READ_BUFFER_SIZE: usize = 1024;
-
-// fn get_file_metadata(file: &fs::File) -> Result<fs::Metadata, errors::Error> {
-//     match file.metadata() {
-//         Ok(m) => Ok(m),
-//         Err(_) => Err(errors::Error::FileGetMetadata),
-//     }
-// }
-
-// fn get_file_length(file: &fs::File) -> Result<u64, errors::Error> {
-//     match file.metadata() {
-//         Ok(m) => Ok(m.len()),
-//         Err(_) => Err(errors::Error::FileGetMetadata),
-//     }
-// }
 
 fn file_seek(file: &mut fs::File, pos: SeekFrom) -> Result<u64, errors::LockerError> {
     match file.seek(pos) {
@@ -46,14 +30,14 @@ fn file_read(file: &mut fs::File, buf: &mut [u8]) -> Result<usize, errors::Locke
     }
 }
 
-pub trait OpenPasswordsFile {
-    fn open_passwords_file<P: AsRef<std::path::Path>>(
+pub trait OpenWithCustomError {
+    fn open_with_custom_error<P: AsRef<std::path::Path>>(
         &self,
         path: P,
     ) -> Result<fs::File, errors::LockerError>;
 }
-impl OpenPasswordsFile for fs::OpenOptions {
-    fn open_passwords_file<P: AsRef<std::path::Path>>(
+impl OpenWithCustomError for fs::OpenOptions {
+    fn open_with_custom_error<P: AsRef<std::path::Path>>(
         &self,
         path: P,
     ) -> Result<fs::File, errors::LockerError> {

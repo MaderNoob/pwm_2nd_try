@@ -4,6 +4,11 @@ use crate::errors;
 pub enum UnixFileFlags{
     Immutable=0x10,
 }
+impl UnixFileFlags{
+    pub fn is_flag_set(flag:UnixFileFlags,flags:i32,)->bool{
+        flags & (flag as i32) !=0
+    }
+}
 
 pub trait FileGetFlags {
     fn get_unix_flags(&self) -> Result<i32, errors::LockerError>;

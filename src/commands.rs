@@ -1,5 +1,9 @@
 use crate::errors::LockerError;
-use crate::locker::{LockFile, ReadLockedFileHeaders, UnlockFile};
+use crate::files::OpenWithCustomError;
+use crate::flags::{FileGetFlags, FileSetFlags, UnixFileFlags};
+use crate::locker::{
+    EncryptFile, EncryptedFileHeaders, ImmutableFile, ReadLockedFileHeaders, UnlockFile,
+};
 use std::fs;
 
 pub const DEFAULT_SALT_LENGTH: usize = 20;
@@ -15,7 +19,12 @@ enum StringErrorMessage {
 
 // handles every error except the WrongPassword error,
 // which should be handled before calling this function
-fn handle_error(error: LockerError, path: &str, backup_file_path: &str, error_style: &ansi_term::Style) {
+fn handle_locker_error(
+    error: LockerError,
+    path: &str,
+    backup_file_path: &str,
+    error_style: &ansi_term::Style,
+) {
     let error_message = match error {
         LockerError::OpenFile => {
             StringErrorMessage::String(format!("Failed to open the target file: \"{}\"", path))
@@ -26,8 +35,12 @@ fn handle_error(error: LockerError, path: &str, backup_file_path: &str, error_st
         LockerError::SetLengthFile => {
             StringErrorMessage::Str("Failed to set the length of the target file")
         }
-        LockerError::FileGetFlags => StringErrorMessage::Str("Failed to get flags of the target file"),
-        LockerError::FileSetFlags => StringErrorMessage::Str("Failed to set flags for the target file"),
+        LockerError::FileGetFlags => {
+            StringErrorMessage::Str("Failed to get flags of the target file")
+        }
+        LockerError::FileSetFlags => {
+            StringErrorMessage::Str("Failed to set flags for the target file")
+        }
         LockerError::CreatBackupFile => StringErrorMessage::String(format!(
             "Failed to create a backup file: \"{}\"",
             backup_file_path
@@ -64,6 +77,21 @@ fn handle_error(error: LockerError, path: &str, backup_file_path: &str, error_st
     }
 }
 
+// handle locker errors caused by function that are no using passwords,
+// will print that an unexpected error has occured if it gets a wrong password error
+fn handle_locker_error_no_password(
+    error: LockerError,
+    path: &str,
+    backup_file_path: &str,
+    error_style: &ansi_term::Style,
+) {
+    if let LockerError::WrongPassword = error {
+        eprintln!("{}", error_style.paint("An unexpected error has occured"));
+    } else {
+        handle_locker_error(error, path, backup_file_path, error_style);
+    }
+}
+
 fn get_error_message_style() -> ansi_term::Style {
     ansi_term::Colour::Red.bold()
 }
@@ -72,51 +100,108 @@ fn get_success_message_style() -> ansi_term::Style {
     ansi_term::Colour::Green.bold()
 }
 
-fn lock(path: &str, key: &str, salt_length: Option<usize>) {
+macro_rules! try_locker_error_no_password {
+    ($result:expr,$path:expr,$backup_path:expr,$error_style:expr) => {
+        match $result {
+            Ok(v) => v,
+            Err(e) => {
+                handle_locker_error_no_password(e, $path, $backup_path, $error_style);
+                return;
+            }
+        }
+    };
+}
+
+pub fn lock(path: &str, key: &str, salt_length: Option<usize>, make_immutable: bool) {
     let backup_file_name = get_backup_file_name(path);
     let mut thread_random = rand::thread_rng();
     let error_style = get_error_message_style();
     let success_style = get_success_message_style();
-    match fs::File::lock_file(
+    let mut file = try_locker_error_no_password!(
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open_with_custom_error(path),
         path,
+        &backup_file_name[..],
+        &error_style
+    );
+    match file.encrypt(
         key,
         salt_length.unwrap_or(DEFAULT_SALT_LENGTH),
         &mut thread_random,
         &backup_file_name[..],
     ) {
-        Ok(()) => println!(
-            "{}",
-            success_style.paint("The target file was successfully locked")
-        ),
-        Err(error) => {
-            if let LockerError::WrongPassword = error {
-                eprintln!("{}", error_style.paint("An unexpected error has occured"));
+        Ok(()) => {
+            if make_immutable {
+                let flags = try_locker_error_no_password!(
+                    file.get_unix_flags(),
+                    path,
+                    &backup_file_name[..],
+                    &error_style
+                );
+                try_locker_error_no_password!(
+                    file.make_immutable(flags),
+                    path,
+                    &backup_file_name[..],
+                    &error_style
+                );
             } else {
-                handle_error(error, path, &backup_file_name[..], &error_style);
+                println!(
+                    "{}",
+                    success_style.paint("The target file was successfully locked")
+                )
             }
+        }
+        Err(error) => {
+            handle_locker_error_no_password(error, path, &backup_file_name[..], &error_style);
         }
     }
 }
 
-fn unlock(path: &str) {
+fn flush_and_read_password() -> std::io::Result<String> {
+    use std::io::Write;
+    std::io::stdout().flush()?;
+    rpassword::read_password()
+}
+
+pub fn unlock(path: &str) {
     let backup_file_name = get_backup_file_name(path);
     let error_style = get_error_message_style();
     let success_style = get_success_message_style();
-    let headers = match fs::File::read_locked_file_headers(path) {
-        Ok(headers) => headers,
-        Err(error) => {
-            if let LockerError::WrongPassword = error {
-                eprintln!("{}", error_style.paint("An unexpected error has occured"));
-            } else {
-                handle_error(error, path, &backup_file_name[..], &error_style);
-            }
-            return;
-        }
-    };
+    let mut file = try_locker_error_no_password!(
+        fs::OpenOptions::new()
+            .read(true)
+            .open_with_custom_error(path),
+        path,
+        &backup_file_name[..],
+        &error_style
+    );
+    let flags = try_locker_error_no_password!(
+        file.get_unix_flags(),
+        path,
+        &backup_file_name[..],
+        &error_style
+    );
+    if UnixFileFlags::is_flag_set(UnixFileFlags::Immutable, flags) {
+        try_locker_error_no_password!(
+            file.make_mutable(flags),
+            path,
+            &backup_file_name[..],
+            &error_style
+        );
+    }
+    let headers = try_locker_error_no_password!(
+        EncryptedFileHeaders::from_file(&mut file),
+        path,
+        &backup_file_name[..],
+        &error_style
+    );
+    // close the file before reopening it to unlock it
+    drop(file);
     loop {
-        let key = match rpassword::read_password_from_tty(Some(
-            "Enter the password for the target file:",
-        )) {
+        print!("Enter the password for the target file: ");
+        let key = match flush_and_read_password() {
             Ok(key) => key,
             Err(_) => {
                 eprintln!(
@@ -130,14 +215,19 @@ fn unlock(path: &str) {
             }
         };
         match fs::File::unlock_file(path, key.as_ref(), &backup_file_name[..], &headers) {
-            Ok(()) => println!(
-                "{}",
-                success_style.paint("The target file was successfully unlocked")
-            ),
+            Ok(()) => {
+                println!(
+                    "{}",
+                    success_style.paint("The target file was successfully unlocked")
+                );
+                break;
+            }
             Err(error) => {
                 if let LockerError::WrongPassword = error {
+                    eprintln!("{}", error_style.paint("Wrong password\n"))
                 } else {
-                    handle_error(error, path, &backup_file_name[..], &error_style);
+                    handle_locker_error(error, path, &backup_file_name[..], &error_style);
+                    break;
                 }
             }
         }

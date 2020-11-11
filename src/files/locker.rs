@@ -73,14 +73,11 @@ impl EncryptFile for fs::File {
         backup_file_name: &str,
     ) -> Result<(), errors::LockerError> {
         let mut headers = EncryptedFileHeaders::new(salt_length);
-        let mut hash_salt_buffer = vec![0u8; salt_length];
-        thread_random.fill_bytes(&mut hash_salt_buffer);
-
-        let mut encryption_salt_buffer = vec![0u8; salt_length];
-        thread_random.fill_bytes(&mut encryption_salt_buffer);
+        thread_random.fill_bytes(&mut headers.hash_salt);
+        thread_random.fill_bytes(&mut headers.encryption_salt);
 
         // generate salted key hash
-        create_salted_hash::<Sha512, _, _>(&key, &hash_salt_buffer, &mut headers.salted_key_hash);
+        create_salted_hash::<Sha512, _, _>(&key, &headers.hash_salt, &mut headers.salted_key_hash);
 
         let mut backup_file = self.backup(backup_file_name)?;
 
@@ -150,11 +147,11 @@ impl EncryptedFileHeaders {
             salted_key_hash: [0u8; 64],
             hmac: [0u8; 64],
             salt_length,
-            hash_salt: vec![0u8; 64],
-            encryption_salt: vec![0u8; 64],
+            hash_salt: vec![0u8; salt_length],
+            encryption_salt: vec![0u8; salt_length],
         }
     }
-    fn from_file(file: &mut fs::File) -> Result<EncryptedFileHeaders, errors::LockerError> {
+    pub fn from_file(file: &mut fs::File) -> Result<EncryptedFileHeaders, errors::LockerError> {
         let mut salted_key_hash = [0u8; 64];
         let mut hmac = [0u8; 64];
         let mut salt_length_bytes = [0u8; std::mem::size_of::<usize>()];
@@ -210,7 +207,7 @@ impl ReadLockedFileHeaders for fs::File {
     ) -> Result<EncryptedFileHeaders, errors::LockerError> {
         let mut immutable_file = fs::OpenOptions::new()
             .read(true)
-            .open_passwords_file(&path)?;
+            .open_with_custom_error(&path)?;
         let headers = EncryptedFileHeaders::from_file(&mut immutable_file)?;
         Ok(headers)
     }
@@ -222,6 +219,15 @@ pub struct EncryptedFile {
     file: fs::File,
     chacha: rand_chacha::ChaCha20Rng,
     key: String,
+    key_buf: Vec<u8>,
+}
+pub struct EncryptedFileWriter {
+    headers: EncryptedFileHeaders,
+    file: fs::File,
+    chacha: rand_chacha::ChaCha20Rng,
+    key: String,
+    total_bytes: u64,
+    key_buffer: Vec<u8>,
 }
 impl EncryptedFile {
     pub fn open<P: AsRef<std::path::Path>>(
@@ -238,6 +244,7 @@ impl EncryptedFile {
             headers,
             file,
             key: key.to_string(),
+            key_buf: Vec::new(),
         })
     }
     pub fn from_file(mut file: fs::File, key: &str) -> Result<EncryptedFile, errors::LockerError> {
@@ -247,6 +254,7 @@ impl EncryptedFile {
             headers,
             file,
             key: key.to_string(),
+            key_buf: Vec::new(),
         })
     }
     pub fn with_headers(file: fs::File, headers: EncryptedFileHeaders, key: &str) -> EncryptedFile {
@@ -255,6 +263,7 @@ impl EncryptedFile {
             headers,
             file,
             key: key.to_string(),
+            key_buf: Vec::new(),
         }
     }
     fn seek(&mut self, pos: SeekFrom) -> Result<(), errors::LockerError> {
@@ -266,30 +275,35 @@ impl EncryptedFile {
     fn seek_to_encryption_salt_start(&mut self) -> Result<(), errors::LockerError> {
         self.seek(SeekFrom::Start(self.headers.encryption_salt_start() as u64))
     }
-    pub fn read_exact(
-        &mut self,
-        buf: &mut [u8],
-        key_buf: &mut [u8],
-    ) -> Result<(), errors::LockerError> {
+    pub fn seek_to_content_start(&mut self) -> Result<(), errors::LockerError> {
+        self.seek(SeekFrom::Start(self.headers.len() as u64))
+    }
+    pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), errors::LockerError> {
         if self.file.read_exact(buf).is_err() {
             return Err(errors::LockerError::ReadFile);
         }
-        self.chacha.fill_bytes(key_buf);
+        if self.key_buf.len() < buf.len() {
+            self.key_buf.resize(buf.len(), 0);
+        }
+        self.chacha.fill_bytes(&mut self.key_buf[..buf.len()]);
         for i in 0..buf.len() {
-            buf[i] ^= key_buf[i]
+            buf[i] ^= self.key_buf[i]
         }
         Ok(())
     }
-    pub fn read(
-        &mut self,
-        buf: &mut [u8],
-        key_buf: &mut [u8],
-    ) -> Result<usize, errors::LockerError> {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, errors::LockerError> {
         let amount = match self.file.read(buf) {
             Ok(amount) => amount,
             Err(_) => return Err(errors::LockerError::ReadFile),
         };
-        chacha_encrypt(&mut buf[..amount], &mut key_buf[..amount], &mut self.chacha);
+        if self.key_buf.len() < amount {
+            self.key_buf.resize(amount, 0);
+        }
+        chacha_encrypt(
+            &mut buf[..amount],
+            &mut self.key_buf[..amount],
+            &mut self.chacha,
+        );
         Ok(amount)
     }
     pub fn reencrypt(
@@ -297,22 +311,18 @@ impl EncryptedFile {
         thread_random: &mut rand::rngs::ThreadRng,
         backup_file_name: &str,
     ) -> Result<(), errors::LockerError> {
-        let mut encryption_salt_buffer = vec![0u8; self.headers.salt_length];
-        thread_random.fill_bytes(&mut encryption_salt_buffer);
-
+        thread_random.fill_bytes(&mut self.headers.encryption_salt);
         let mut backup_file = self.file.backup(backup_file_name)?;
 
         fn reencrypt_content_and_rewrite_header(
             file: &mut EncryptedFile,
             backup_file: &mut fs::File,
-            encryption_salt_buffer: &[u8],
         ) -> Result<(), errors::LockerError> {
             encrypt_file(&mut file.file, backup_file, &file.key, &mut file.headers)?;
             file.seek_to_encryption_salt_start()?;
-            file_write_all(&mut file.file, &encryption_salt_buffer)
+            file_write_all(&mut file.file, &file.headers.encryption_salt)
         }
-        match reencrypt_content_and_rewrite_header(self, &mut backup_file, &encryption_salt_buffer)
-        {
+        match reencrypt_content_and_rewrite_header(self, &mut backup_file) {
             Ok(()) => {
                 // close the file before removing it
                 drop(backup_file);
@@ -331,6 +341,42 @@ impl EncryptedFile {
                     Err(_) => Err(errors::LockerError::RemoveBackupFile),
                 }
             }
+        }
+    }
+    pub fn rewrite_content(
+        mut self,
+        thread_random: &mut rand::rngs::ThreadRng,
+        key: &str,
+    ) -> EncryptedFileWriter {
+        thread_random.fill_bytes(&mut self.headers.encryption_salt);
+        EncryptedFileWriter {
+            chacha: create_chacha(key, &self.headers.encryption_salt),
+            headers: self.headers,
+            file: self.file,
+            key: key.to_string(),
+            total_bytes: 0,
+            key_buffer: self.key_buf,
+        }
+    }
+}
+impl EncryptedFileWriter {
+    pub fn write_all(&mut self, buf: &mut [u8]) -> Result<&mut Self, errors::LockerError> {
+        if buf.len() > self.key_buffer.len() {
+            self.key_buffer.resize(buf.len(), 0);
+        }
+        chacha_encrypt(buf, &mut self.key_buffer[..buf.len()], &mut self.chacha);
+        match self.file.write_all(buf) {
+            Ok(()) => {
+                self.total_bytes += buf.len() as u64;
+                Ok(self)
+            }
+            Err(_) => Err(errors::LockerError::WriteFile),
+        }
+    }
+    pub fn shrink_to_fit(&mut self) -> Result<(), errors::LockerError> {
+        match self.file.set_len(self.total_bytes) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(errors::LockerError::SetLengthFile),
         }
     }
 }
@@ -392,9 +438,8 @@ fn unlock_file(
     let mut total_amount = 0u64;
     {
         let mut file_buffer = [0u8; READ_BUFFER_SIZE];
-        let mut xor_key_buffer = [0u8; READ_BUFFER_SIZE];
         loop {
-            let amount = match backup_file.read(&mut file_buffer, &mut xor_key_buffer) {
+            let amount = match backup_file.read(&mut file_buffer) {
                 Ok(result) => result,
                 Err(_) => return Err(errors::LockerError::ReadBackupFile),
             };
@@ -426,31 +471,35 @@ impl UnlockFile for fs::File {
         let mut file = fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open_passwords_file(&path)?;
-        let mut backup_file = EncryptedFile::from_file(file.backup(backup_file_name)?, key)?;
+            .open_with_custom_error(&path)?;
         file_seek(&mut file, SeekFrom::Start(0))?;
         let mut salted_key_hash_buffer = [0u8; 64];
         create_salted_hash::<Sha512, _, _>(key, &headers.hash_salt, &mut salted_key_hash_buffer);
+        let mut backup_file = file.backup(backup_file_name)?;
+        if backup_file.seek(SeekFrom::Start(0)).is_err() {
+            return Err(errors::LockerError::SeekBackupFile);
+        }
+        let mut backup = EncryptedFile::from_file(backup_file, key)?;
         match {
             if salted_key_hash_buffer == headers.salted_key_hash {
-                unlock_file(&mut file, &mut backup_file, &headers)
+                unlock_file(&mut file, &mut backup, &headers)
             } else {
                 Err(errors::LockerError::WrongPassword)
             }
         } {
             Ok(()) => {
                 // close the file before removing it
-                drop(backup_file);
+                drop(backup);
                 match fs::remove_file(backup_file_name) {
                     Ok(()) => Ok(()),
                     Err(_) => Err(errors::LockerError::RemoveBackupFile),
                 }
             }
             Err(e) => {
-                file.revert_to_backup(&mut backup_file.file)?;
+                file.revert_to_backup(&mut backup.file)?;
 
                 // close the file before removing it
-                drop(backup_file);
+                drop(backup);
                 match fs::remove_file(backup_file_name) {
                     Ok(()) => Err(e),
                     Err(_) => Err(errors::LockerError::RemoveBackupFile),
